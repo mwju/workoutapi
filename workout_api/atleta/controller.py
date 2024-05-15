@@ -1,15 +1,17 @@
 from datetime import datetime
 from uuid import uuid4
-from fastapi import APIRouter, Body, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, Query, status
 from pydantic import UUID4
 
 from workout_api.atleta.schemas import AtletaIn, AtletaOut, AtletaUpdate
 from workout_api.atleta.models import AtletaModel
+from workout_api.atleta.atleta_response import AtletaResponse 
 from workout_api.categorias.models import CategoriaModel
 from workout_api.centro_treinamento.models import CentroTreinamentoModel
 
 from workout_api.contrib.dependencies import DatabaseDependency
 from sqlalchemy.future import select
+import logging
 
 router = APIRouter()
 
@@ -62,17 +64,35 @@ async def post(
 
     return atleta_out
 
-
 @router.get(
     '/', 
     summary='Consultar todos os Atletas',
     status_code=status.HTTP_200_OK,
-    response_model=list[AtletaOut],
+    response_model=list[AtletaResponse],  # Use AtletaResponse como o modelo de resposta
 )
-async def query(db_session: DatabaseDependency) -> list[AtletaOut]:
-    atletas: list[AtletaOut] = (await db_session.execute(select(AtletaModel))).scalars().all()
+async def query(
+    db_session: DatabaseDependency,
+    nome: str = Query(None, description="Filtrar por nome do atleta"),
+    cpf: str = Query(None, description="Filtrar por CPF do atleta")
+) -> list[AtletaResponse]:
+    # Construa sua consulta com base nos parâmetros de consulta
+    query = select(AtletaModel)
+    if nome is not None:
+        query = query.where(AtletaModel.nome == nome)
+    if cpf is not None:
+        query = query.where(AtletaModel.cpf == cpf)
+
+    atletas = await db_session.execute(query)
+    atletas_response = [
+        AtletaResponse(
+            nome=atleta.nome,
+            centro_treinamento=atleta.centro_treinamento.nome,
+            categoria=atleta.categoria.nome
+        ) 
+        for atleta in atletas.scalars().all()
+    ]
     
-    return [AtletaOut.model_validate(atleta) for atleta in atletas]
+    return atletas_response
 
 
 @router.get(
