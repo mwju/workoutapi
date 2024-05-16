@@ -1,17 +1,18 @@
 from datetime import datetime
 from uuid import uuid4
-from fastapi import APIRouter, Body, HTTPException, Query, status
+from fastapi import APIRouter, Body, HTTPException, Query, status, Depends
 from pydantic import UUID4
-
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 from workout_api.atleta.schemas import AtletaIn, AtletaOut, AtletaUpdate
 from workout_api.atleta.models import AtletaModel
 from workout_api.atleta.atleta_response import AtletaResponse 
 from workout_api.categorias.models import CategoriaModel
 from workout_api.centro_treinamento.models import CentroTreinamentoModel
-
 from workout_api.contrib.dependencies import DatabaseDependency
 from sqlalchemy.future import select
 import logging
+from typing import List
 
 router = APIRouter()
 
@@ -47,6 +48,7 @@ async def post(
             status_code=status.HTTP_400_BAD_REQUEST, 
             detail=f'O centro de treinamento {centro_treinamento_nome} não foi encontrado.'
         )
+
     try:
         atleta_out = AtletaOut(id=uuid4(), created_at=datetime.utcnow(), **atleta_in.model_dump())
         atleta_model = AtletaModel(**atleta_out.model_dump(exclude={'categoria', 'centro_treinamento'}))
@@ -56,26 +58,36 @@ async def post(
         
         db_session.add(atleta_model)
         await db_session.commit()
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail='Ocorreu um erro ao inserir os dados no banco'
-        )
+    except IntegrityError as e:
+        # Se a exceção for devido a uma violação de integridade UNIQUE no CPF, retorne a mensagem adequada
+        if "UNIQUE constraint failed: atletas.cpf" in str(e):
+            raise HTTPException(
+                status_code=status.HTTP_303_SEE_OTHER, 
+                detail=f"Já existe um atleta cadastrado com o CPF: {atleta_in.cpf}"
+            )
+        else:
+            # Se a exceção não for relacionada ao CPF, retorne uma mensagem de erro genérica
+            print(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+                detail='Ocorreu um erro ao inserir os dados no banco'
+            )
 
-    return atleta_out
 
 @router.get(
     '/', 
     summary='Consultar todos os Atletas',
     status_code=status.HTTP_200_OK,
-    response_model=list[AtletaResponse],  # Use AtletaResponse como o modelo de resposta
+    response_model=list[AtletaResponse],  
 )
 async def query(
     db_session: DatabaseDependency,
     nome: str = Query(None, description="Filtrar por nome do atleta"),
-    cpf: str = Query(None, description="Filtrar por CPF do atleta")
+    cpf: str = Query(None, description="Filtrar por CPF do atleta"),
+    page: int = Query(1, description="Número da página a ser retornada", ge=1),
+    size: int = Query(50, description="Tamanho da página", ge=1, le=100)
+
 ) -> list[AtletaResponse]:
-    # Construa sua consulta com base nos parâmetros de consulta
     query = select(AtletaModel)
     if nome is not None:
         query = query.where(AtletaModel.nome == nome)
@@ -90,10 +102,12 @@ async def query(
             categoria=atleta.categoria.nome
         ) 
         for atleta in atletas.scalars().all()
-    ]
+    ]    
+    offset = (page - 1) * size
     
-    return atletas_response
+    atletas_response = atletas_response[offset:(offset + size)]
 
+    return atletas_response
 
 @router.get(
     '/{id}', 
@@ -138,7 +152,6 @@ async def patch(id: UUID4, db_session: DatabaseDependency, atleta_up: AtletaUpda
 
     await db_session.commit()
     await db_session.refresh(atleta)
-
     return atleta
 
 
